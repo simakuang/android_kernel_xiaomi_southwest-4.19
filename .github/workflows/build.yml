@@ -139,17 +139,28 @@ jobs:
           # 复制默认配置
           cp arch/arm64/configs/clover_defconfig out/.config
           
-          # 直接编辑 .config 文件
+          # 保存原始配置用于对比
+          cp out/.config out/.config.orig
+          
           echo "=== Manually Setting Essential Configs ==="
           
-          # KernelSU 必需的配置
+          # 首先启用 KPROBES 的所有依赖项
           cat >> out/.config << EOF
-          CONFIG_KPROBES=y
-          CONFIG_HAVE_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
           CONFIG_MODULES=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_HAVE_KRETPROBES=y
+          CONFIG_HAVE_ARCH_KPROBES=y
+          CONFIG_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_KRETPROBES=y
+          
+          # 其他必要的配置
           CONFIG_OVERLAY_FS=y
           CONFIG_ADVISE_SYSCALLS=y
+          CONFIG_SECURITY=y
+          CONFIG_SECURITY_NETWORK=y
           
           # KernelSU 基础配置
           CONFIG_KSU=y
@@ -176,38 +187,85 @@ jobs:
           sed -i '/POLLY/d' out/.config
           sed -i '/THIN_LTO/d' out/.config
           
-          # 使配置生效
+          # 使用 scripts/config 确保配置被正确设置
+          ./scripts/config --file out/.config \
+            -e MODULES \
+            -e KALLSYMS \
+            -e KALLSYMS_ALL \
+            -e KPROBES \
+            -e HAVE_KPROBES \
+            -e HAVE_KRETPROBES \
+            -e HAVE_ARCH_KPROBES \
+            -e KPROBE_EVENTS \
+            -e KRETPROBES \
+            -e OVERLAY_FS \
+            -e ADVISE_SYSCALLS \
+            -e KSU \
+            -e KSU_SUSFS \
+            -e SUSFS \
+            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
+            -d KSU_SUSFS_SUS_SU
+          
+          # 生成最终配置
           make O=out olddefconfig
+          
+          # 保存配置文件的差异以供调试
+          diff -u out/.config.orig out/.config > out/config.diff || true
           
           # 验证配置
           echo "=== Verifying Configuration ==="
           echo "Checking essential configs:"
-          for config in CONFIG_KPROBES CONFIG_HAVE_KPROBES CONFIG_KPROBE_EVENTS \
-                       CONFIG_MODULES CONFIG_OVERLAY_FS CONFIG_ADVISE_SYSCALLS \
-                       CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_SUSFS \
-                       CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-          do
-            if grep -q "^$config=y" out/.config; then
-              echo "$config is enabled ✓"
+          {
+            echo "=== Kernel Configuration Status ===" > out/config_status.log
+            success=true
+            
+            for config in CONFIG_KPROBES CONFIG_HAVE_KPROBES CONFIG_KPROBE_EVENTS \
+                         CONFIG_MODULES CONFIG_OVERLAY_FS CONFIG_ADVISE_SYSCALLS \
+                         CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_SUSFS \
+                         CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
+            do
+              if grep -q "^$config=y" out/.config; then
+                echo "$config is enabled ✓" | tee -a out/config_status.log
+              else
+                echo "ERROR: $config is not enabled ✗" | tee -a out/config_status.log
+                echo "Current value:" | tee -a out/config_status.log
+                grep "$config" out/.config || echo "$config not found" | tee -a out/config_status.log
+                success=false
+              fi
+            done
+            
+            # 检查 CONFIG_KSU_SUSFS_SUS_SU 是否被禁用
+            if grep -q "^CONFIG_KSU_SUSFS_SUS_SU=y" out/.config; then
+              echo "ERROR: CONFIG_KSU_SUSFS_SUS_SU should be disabled ✗" | tee -a out/config_status.log
+              success=false
             else
-              echo "ERROR: $config is not enabled ✗"
-              echo "Current value:"
-              grep "$config" out/.config || echo "$config not found"
+              echo "CONFIG_KSU_SUSFS_SUS_SU is disabled ✓" | tee -a out/config_status.log
+            fi
+            
+            # 显示完整配置状态
+            echo -e "\n=== Full Configuration Dump ===" >> out/config_status.log
+            grep -E "CONFIG_(KPROBES|HAVE_KPROBES|KPROBE_EVENTS|MODULES|OVERLAY_FS|ADVISE_SYSCALLS|KSU|SUSFS)" out/.config >> out/config_status.log
+            
+            # 如果验证失败，确保创建必要的文件供后续步骤使用
+            if [ "$success" = false ]; then
+              cp out/config_status.log build.log
+              cp out/config.diff config.diff
               exit 1
             fi
-          done
-          
-          # 确保 CONFIG_KSU_SUSFS_SUS_SU 被禁用
-          if grep -q "^CONFIG_KSU_SUSFS_SUS_SU=y" out/.config; then
-            echo "ERROR: CONFIG_KSU_SUSFS_SUS_SU should be disabled ✗"
-            exit 1
-          else
-            echo "CONFIG_KSU_SUSFS_SUS_SU is disabled ✓"
-          fi
-          
-          echo "=== Configuration Summary ==="
-          echo "All required configurations:"
-          grep -E "CONFIG_(KPROBES|HAVE_KPROBES|KPROBE_EVENTS|MODULES|OVERLAY_FS|ADVISE_SYSCALLS|KSU|SUSFS)" out/.config
+          }
+
+      - name: Upload Build Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            out/config_status.log
+            out/config.diff
+            out/.config
+            build.log
+            config.diff
+          retention-days: 7
           
       - name: Build Kernel
         run: |
