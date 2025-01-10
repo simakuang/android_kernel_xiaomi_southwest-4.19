@@ -162,6 +162,22 @@ jobs:
           
           # 配置必要的内核选项
           echo "=== Configuring Kernel Options ==="
+          # 首先确保基础配置存在
+          echo "CONFIG_MODULES=y" >> out/.config
+          echo "CONFIG_KPROBES=y" >> out/.config
+          echo "CONFIG_HAVE_KPROBES=y" >> out/.config
+          echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
+          echo "CONFIG_OVERLAY_FS=y" >> out/.config
+          echo "CONFIG_ADVISE_SYSCALLS=y" >> out/.config
+          echo "CONFIG_KSU=y" >> out/.config
+          
+          # SUSFS 相关配置
+          echo "CONFIG_KSU_SUSFS=y" >> out/.config
+          echo "CONFIG_SUSFS=y" >> out/.config
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> out/.config
+          echo "# CONFIG_KSU_SUSFS_SUS_SU is not set" >> out/.config
+          
+          # 使用 scripts/config 进一步确保配置
           ./scripts/config --file out/.config \
             -e CONFIG_KPROBES \
             -e CONFIG_HAVE_KPROBES \
@@ -176,7 +192,7 @@ jobs:
             -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
             --set-str CONFIG_LOCALVERSION "-KernelSU-SUSFS"
           
-          # 生成最终配置
+          # 确保配置被应用
           make O=out olddefconfig
           
           # 验证配置
@@ -202,6 +218,20 @@ jobs:
               echo "ERROR: ${config} is not enabled ✗"
               echo "Current value:"
               grep "${config}" out/.config || echo "${config} not found"
+              # Instead of exit 1, we'll try to fix it
+              echo "Attempting to fix ${config}..."
+              echo "${config}=y" >> out/.config
+              make O=out olddefconfig
+            fi
+          done
+          
+          # 再次验证配置
+          echo "=== Final Configuration Check ==="
+          for config in "${configs_to_check[@]}"; do
+            if grep -q "^${config}=y" out/.config; then
+              echo "${config} is enabled ✓"
+            else
+              echo "ERROR: ${config} still not enabled after fix attempt ✗"
               exit 1
             fi
           done
@@ -223,6 +253,9 @@ jobs:
           ls -la arch/arm64/boot/
           ls -la out/arch/arm64/boot/ || true
 
+          # 显示完整的 .config 文件以供调试
+          echo "=== Full .config file ===="
+          cat out/.config
       - name: Build Kernel
         run: |
           echo "=== Building Kernel ==="
