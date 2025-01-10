@@ -35,28 +35,6 @@ jobs:
             git make bc bison openssl libssl-dev flex zip curl \
             ccache automake lzop
 
-      - name: Verify Prerequisites
-        run: |
-          echo "=== Verifying Prerequisites ==="
-          # 检查必要的目录
-          for dir in "arch/arm64/boot/dts" "drivers/kernelsu" "fs"; do
-            if [ ! -d "$dir" ]; then
-              echo "Creating directory: $dir"
-              mkdir -p "$dir"
-            fi
-          done
-          
-          # 检查必要的文件
-          if [ ! -f "arch/arm64/configs/clover_defconfig" ]; then
-            echo "ERROR: Missing kernel defconfig"
-            exit 1
-          fi
-          
-          # 验证工具链
-          echo "=== Toolchain Version ==="
-          aarch64-linux-gnu-gcc --version
-          arm-linux-gnueabi-gcc --version
-
       - name: Setup KernelSU
         run: |
           echo "=== Setting up KernelSU ==="
@@ -127,8 +105,6 @@ jobs:
           ls -R include/linux/susfs* || true
 
       - name: Setup Kernel Configuration
-        id: kernel_config
-        continue-on-error: true
         run: |
           echo "=== Setting up Kernel Configuration ==="
           export ARCH=arm64
@@ -138,142 +114,59 @@ jobs:
           mkdir -p out
           mkdir -p arch/arm64/boot/dts
           
-          # 复制默认配置
-          cp arch/arm64/configs/clover_defconfig out/.config
+          # 使用设备默认配置作为基础
+          echo "=== Using clover_defconfig as base ==="
+          make O=out ARCH=arm64 clover_defconfig
           
-          # 保存原始配置用于对比
-          cp out/.config out/.config.orig
-          
-          echo "=== Manually Setting Essential Configs ==="
-          
-          # 确保 KernelSU 的 Kconfig 存在并且正确链接
-          if [ ! -f "KernelSU/kernel/Kconfig" ]; then
-            echo "Error: KernelSU Kconfig not found!"
-            exit 1
-          fi
-          
-          # 添加 KernelSU 到内核配置中
-          if ! grep -q "source \"KernelSU/kernel/Kconfig\"" "./Kconfig"; then
-            echo "source \"KernelSU/kernel/Kconfig\"" >> "./Kconfig"
-          fi
-          
-          # 设置基础配置
-          cat > out/.config << EOF
-          # 基础内核配置
-          CONFIG_MODULES=y
-          CONFIG_KALLSYMS=y
-          CONFIG_KALLSYMS_ALL=y
-          CONFIG_HAVE_KPROBES=y
-          CONFIG_HAVE_KRETPROBES=y
-          CONFIG_HAVE_ARCH_KPROBES=y
-          CONFIG_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
-          CONFIG_KRETPROBES=y
-          CONFIG_HAVE_KPROBES_ON_FTRACE=y
-          
-          # 文件系统支持
-          CONFIG_OVERLAY_FS=y
-          CONFIG_ADVISE_SYSCALLS=y
-          CONFIG_SECURITY=y
-          CONFIG_SECURITY_NETWORK=y
-          
-          # KernelSU 配置
-          CONFIG_KSU=y
-          
-          # SUSFS 配置
-          CONFIG_KSU_SUSFS=y
-          CONFIG_SUSFS=y
-          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-          # CONFIG_KSU_SUSFS_SUS_SU is not set
-          
-          # 编译器配置
-          CONFIG_CC_IS_GCC=y
-          # CONFIG_CC_IS_CLANG is not set
-          CONFIG_WERROR=n
-          EOF
-          
-          # 使用 make menuconfig 生成完整的配置依赖
-          yes "" | make O=out menuconfig
-          
-          # 使用 scripts/config 确保关键配置被设置
+          # 在现有配置基础上添加必要的选项
+          echo "=== Adding KernelSU and SUSFS configs ==="
           ./scripts/config --file out/.config \
-            -e MODULES \
-            -e KALLSYMS \
-            -e KALLSYMS_ALL \
             -e KPROBES \
             -e HAVE_KPROBES \
-            -e HAVE_KRETPROBES \
-            -e HAVE_ARCH_KPROBES \
             -e KPROBE_EVENTS \
-            -e KRETPROBES \
-            -e HAVE_KPROBES_ON_FTRACE \
+            -e MODULES \
             -e OVERLAY_FS \
             -e ADVISE_SYSCALLS \
-            -e SECURITY \
-            -e SECURITY_NETWORK \
             -e KSU \
             -e KSU_SUSFS \
             -e SUSFS \
+            -d KSU_SUSFS_SUS_SU \
             -e KSU_SUSFS_HAS_MAGIC_MOUNT \
-            -d KSU_SUSFS_SUS_SU
+            --set-str LOCALVERSION "-KernelSU-SUSFS"
           
-          # 生成最终配置
-          make O=out olddefconfig
+          # 确保配置更新
+          make O=out ARCH=arm64 olddefconfig
           
-          # 创建配置状态报告
-          {
-            echo "=== Kernel Configuration Status ===" > out/config_status.log
-            echo "Time: $(date)" >> out/config_status.log
-            echo -e "\n=== Configuration Differences ===" >> out/config_status.log
-            diff -u out/.config.orig out/.config >> out/config_status.log || true
-            
-            echo -e "\n=== Essential Configurations ===" >> out/config_status.log
-            success=true
-            
-            configs_to_check=(
-              "CONFIG_KPROBES"
-              "CONFIG_HAVE_KPROBES"
-              "CONFIG_KPROBE_EVENTS"
-              "CONFIG_MODULES"
-              "CONFIG_OVERLAY_FS"
-              "CONFIG_ADVISE_SYSCALLS"
-              "CONFIG_KSU"
-              "CONFIG_KSU_SUSFS"
-              "CONFIG_SUSFS"
-              "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT"
-            )
-            
-            for config in "${configs_to_check[@]}"; do
-              if grep -q "^$config=y" out/.config; then
-                echo "$config is enabled ✓" | tee -a out/config_status.log
-              else
-                echo "ERROR: $config is not enabled ✗" | tee -a out/config_status.log
-                echo "Current value:" | tee -a out/config_status.log
-                grep "$config" out/.config || echo "$config not found" | tee -a out/config_status.log
-                success=false
-              fi
-            done
-            
-            echo -e "\n=== Full Configuration ===" >> out/config_status.log
-            cat out/.config >> out/config_status.log
-            
-            if [ "$success" = false ]; then
-              echo "::error::Configuration validation failed"
+          # 验证配置
+          echo "=== Verifying Configuration ==="
+          configs_to_check=(
+            "CONFIG_KPROBES"
+            "CONFIG_HAVE_KPROBES"
+            "CONFIG_KPROBE_EVENTS"
+            "CONFIG_MODULES"
+            "CONFIG_OVERLAY_FS"
+            "CONFIG_ADVISE_SYSCALLS"
+            "CONFIG_KSU"
+            "CONFIG_KSU_SUSFS"
+            "CONFIG_SUSFS"
+            "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT"
+          )
+          
+          for config in "${configs_to_check[@]}"; do
+            if grep -q "^$config=y" out/.config; then
+              echo "$config is enabled ✓"
+            else
+              echo "ERROR: $config is not enabled ✗"
+              echo "Current value:"
+              grep "$config" out/.config || echo "$config not found"
               exit 1
             fi
-          }
-
-      - name: Upload Configuration Status
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-config-status-${{ github.run_id }}
-          path: |
-            out/config_status.log
-            out/.config
-            out/.config.orig
-          retention-days: 7
+          done
           
+          echo "=== Current Configuration ==="
+          echo "Checking all relevant configs:"
+          grep -E "CONFIG_(KPROBES|HAVE_KPROBES|KPROBE_EVENTS|MODULES|OVERLAY_FS|ADVISE_SYSCALLS|KSU|SUSFS)" out/.config
+
       - name: Build Kernel
         run: |
           echo "=== Building Kernel ==="
@@ -297,13 +190,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             KCFLAGS="" \
             KAFLAGS="" \
-            -j$(nproc --all) 2>&1 | tee build.log || {
-              echo "Build failed! Checking error log..."
-              tail -n 200 build.log
-              echo "=== Directory Structure ==="
-              ls -R out/arch/arm64/boot/
-              exit 1
-            }
+            -j$(nproc --all) 2>&1 | tee build.log
           
           echo "=== Ccache Stats After Build ==="
           ccache -s
@@ -332,25 +219,16 @@ jobs:
           echo "=== Release Package Contents ==="
           unzip -l kernel-release.zip
 
-      - name: Upload Artifacts
+      - name: Upload Build Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-release
+          name: kernel-build-${{ github.run_id }}
           path: |
             kernel-release.zip
             build.log
-          retention-days: 30
-
-      - name: Upload Build Logs on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
             out/.config
-            build.log
-            *.rej
-            *.orig
+            out/config_status.log
           retention-days: 7
 
       - name: Create Release
