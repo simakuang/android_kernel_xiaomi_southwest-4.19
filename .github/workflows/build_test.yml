@@ -1,0 +1,110 @@
+好的，我来帮你简化工作流，先只保留编译内核的基本功能。以下是精简后的工作流：
+
+```yaml
+name: Build Kernel
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Setup Build Environment
+        run: |
+          echo "=== Installing Dependencies ==="
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            git make bc bison openssl libssl-dev flex zip curl \
+            ccache automake lzop
+
+      - name: Setup Kernel Configuration
+        run: |
+          echo "=== Setting up Kernel Configuration ==="
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          mkdir -p out
+          mkdir -p arch/arm64/boot/dts
+          
+          # 使用设备默认配置
+          make O=out ARCH=arm64 clover_defconfig
+          
+          # 基础配置确认
+          make O=out ARCH=arm64 olddefconfig
+
+      - name: Build Kernel
+        run: |
+          echo "=== Building Kernel ==="
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CCACHE_DIR=~/.ccache
+          
+          echo "=== Starting Kernel Build ==="
+          mkdir -p out/arch/arm64/boot/dts
+          
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            -j$(nproc --all) 2>&1 | tee build.log
+          
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "✅ Kernel compiled successfully!"
+            ls -lh out/arch/arm64/boot/Image.gz-dtb
+          else
+            echo "❌ Kernel compilation failed!"
+            echo "=== Build Log Tail ==="
+            tail -n 100 build.log
+            exit 1
+          fi
+
+      - name: Upload Build Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-${{ github.run_id }}
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            build.log
+            out/.config
+          retention-days: 7
+```
+
+主要变更：
+
+1. 移除了所有子模块相关配置
+2. 保留基本编译环境设置
+3. 保留基本内核配置流程
+4. 简化构建过程
+5. 简化输出文件
+
+建议先运行这个基础版本，确认内核能够正常编译。等基础编译没问题后，我们再一步步添加：
+
+1. 先添加 KernelSU 模块
+2. 再添加 SUSFS 模块
+3. 最后添加其他必要的配置
+
+这样可以更容易定位可能出现的问题。你可以先尝试运行这个简化版本，看看是否能成功编译内核？
