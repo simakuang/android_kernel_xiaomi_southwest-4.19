@@ -1,4 +1,4 @@
-name: Build Optimized Mobile Kernel
+name: Build Kernel
 on:
   push:
     branches: [ main ]
@@ -31,23 +31,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            clang-16 lld-16 llvm-16 \
+            clang-15 lld-15 llvm-15 \
             git make bc bison openssl \
             libssl-dev flex zip curl \
             ccache automake lzop python3 \
             binutils-aarch64-linux-gnu
-
-      - name: Setup LLVM Toolchain
-        run: |
+          
           echo "=== Setting up LLVM Toolchain ==="
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-16 100
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-16 100
-          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-16 100
-          sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-16 100
-          sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-16 100
-          sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-16 100
-          sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-16 100
-
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-15 100
+          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-15 100
+          sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-15 100
+          sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-15 100
+          sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-15 100
+          sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-15 100
+          
           echo "=== Checking Toolchain Versions ==="
           clang --version
           ld.lld --version
@@ -60,14 +58,8 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export LD=ld.lld
+          export LLVM=1
+          export LLVM_IAS=1
           
           mkdir -p out
           mkdir -p arch/arm64/boot/dts
@@ -75,48 +67,34 @@ jobs:
           # 使用设备默认配置
           make O=out ARCH=arm64 clover_defconfig
           
-          # 优化配置
+          # 基础配置选项
           ./scripts/config --file out/.config \
-            -e LTO \
+            -d LTO_NONE \
             -e LTO_CLANG \
-            -e LLVM \
-            -e LLVM_POLLY \
-            -e CFI \
-            -e CFI_PERMISSIVE \
-            -e CFI_CLANG \
+            -e LTO \
             -e THINLTO \
-            -e ARM64_CRYPTO \
-            -e CRYPTO_AES_ARM64_CE_CCM \
-            -e CRYPTO_AES_ARM64_CE_BLK \
-            -e CRYPTO_SHA1_ARM64_CE \
-            -e CRYPTO_SHA2_ARM64_CE \
-            -e CRYPTO_SHA512_ARM64_CE \
-            -e CRYPTO_SHA3_ARM64 \
-            -e CRYPTO_GHASH_ARM64_CE \
-            -e KPROBES \
-            -e OPTPROBES \
-            -e KPROBES_ON_FTRACE \
-            -e HAVE_KPROBES \
-            -e HAVE_KPROBES_ON_FTRACE \
-            -e HAVE_OPTPROBES \
-            -e PREEMPT \
+            -d CFI \
+            -d CFI_PERMISSIVE \
+            -d CFI_CLANG \
+            -e LLVM \
+            -d LLVM_POLLY \
             -d DEBUG_INFO \
             -d DEBUG_INFO_DWARF4 \
             -d DEBUG_INFO_DWARF5 \
-            -d SLUB_DEBUG \
-            -d SLUB_DEBUG_ON \
-            -d STACKTRACE \
-            -d DYNAMIC_DEBUG
+            -d KPROBES \
+            -d HAVE_KPROBES \
+            -d KPROBE_EVENTS
           
           # 更新配置
           make O=out ARCH=arm64 olddefconfig
           
-          echo "=== Kernel Configuration Summary ==="
-          grep -E "CONFIG_(LTO|LLVM|CFI|CRYPTO|PREEMPT|DEBUG).*=" out/.config
+          echo "=== Verify Configuration ==="
+          grep -E "CONFIG_(LTO|LLVM|CFI).*=" out/.config
 
       - name: Build Kernel
         run: |
           echo "=== Building Kernel ==="
+          # 设置环境变量
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -133,28 +111,37 @@ jobs:
           export LLVM_IAS=1
           export CCACHE_DIR=~/.ccache
           
-          # 优化参数
-          KBUILD_CFLAGS="-O3 -mtune=native -march=native"
-          KBUILD_CFLAGS+=" -fdata-sections -ffunction-sections"
-          KBUILD_CFLAGS+=" -fno-common -fno-strict-aliasing"
-          KBUILD_CFLAGS+=" -pipe -ffast-math"
+          # 基础编译参数
+          KBUILD_CFLAGS="-O2 --target=aarch64-linux-gnu"
+          KBUILD_CFLAGS+=" -Wno-unused-variable -Wno-unused-function"
+          KBUILD_CFLAGS+=" -Wno-return-type -Wno-strict-aliasing"
+          KBUILD_CFLAGS+=" -fno-common -fno-stack-protector"
+          KBUILD_CFLAGS+=" -fno-asynchronous-unwind-tables"
           KBUILD_CFLAGS+=" -flto=thin"
           export KBUILD_CFLAGS
           
-          echo "=== Starting Optimized Kernel Build ==="
+          # 显示编译信息
+          echo "=== Compiler Version ==="
+          ${CC} --version
+          
+          echo "=== Build Flags ==="
+          echo "KBUILD_CFLAGS: ${KBUILD_CFLAGS}"
+          
+          echo "=== Starting Kernel Build ==="
           make O=out \
             ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
-            LD=ld.lld \
             STRIP=llvm-strip \
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
-            KBUILD_CFLAGS="$KBUILD_CFLAGS" \
+            LLVM=1 \
+            LLVM_IAS=1 \
             -j$(nproc --all) 2>&1 | tee build.log
           
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
@@ -166,18 +153,6 @@ jobs:
             tail -n 100 build.log
             exit 1
           fi
-
-      - name: Post Build Analysis
-        if: success()
-        run: |
-          echo "=== Kernel Size Analysis ==="
-          ls -lh out/arch/arm64/boot/Image*
-          
-          echo "=== Checking LTO Status ==="
-          nm out/vmlinux | grep -c "LLVM" || true
-          
-          echo "=== Security Features ==="
-          readelf -S out/vmlinux | grep -i "gnu"
 
       - name: Create Release Package
         if: success()
