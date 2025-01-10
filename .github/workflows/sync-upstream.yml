@@ -1,0 +1,84 @@
+name: Sync Upstream and Update Submodules
+
+on:
+  # 允许手动触发
+  workflow_dispatch:
+  # 自动触发（每周一凌晨运行）
+  schedule:
+    - cron: '0 0 * * 1'  # 每周一凌晨 00:00 运行
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0
+
+      # 配置 Git
+      - name: Setup Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      # 添加上游仓库
+      - name: Add Upstream Repository
+        run: |
+          git remote add upstream https://github.com/pix106/android_kernel_xiaomi_southwest-4.19.git
+          git fetch upstream
+
+      # 同步上游更改，但保留自己的修改
+      - name: Sync with Upstream
+        run: |
+          # 获取当前分支名称
+          CURRENT_BRANCH=$(git symbolic-ref --short HEAD)
+          
+          # 创建临时分支
+          git checkout -b temp-sync
+          
+          # 合并上游更改
+          git merge upstream/$CURRENT_BRANCH --no-edit
+          
+          # 如果有冲突，保留本地更改
+          if [ $? -ne 0 ]; then
+            echo "Merge conflicts detected, preserving local changes..."
+            git checkout --ours .
+            git add .
+            git commit -m "Merge upstream (with local changes preserved)"
+          fi
+          
+          # 更新子模块到最新版本
+          git submodule update --recursive --remote
+          
+          # 提交子模块更新
+          git add .
+          git commit -m "Update submodules" || echo "No submodule changes to commit"
+          
+          # 切回原分支并合并更改
+          git checkout $CURRENT_BRANCH
+          git merge temp-sync
+          git branch -D temp-sync
+
+      # 推送更改
+      - name: Push Changes
+        run: |
+          git push origin HEAD
+
+      # 验证子模块状态
+      - name: Verify Submodules
+        run: |
+          echo "=== Submodule Status ==="
+          git submodule status
+          
+          echo "=== SUSFS Branch ==="
+          cd SUSFS
+          git branch
+          git rev-parse HEAD
+          cd ..
+          
+          echo "=== KernelSU Branch ==="
+          cd KernelSU
+          git branch
+          git rev-parse HEAD
