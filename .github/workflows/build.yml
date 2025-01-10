@@ -68,10 +68,12 @@ jobs:
           mkdir -p out
           mkdir -p arch/arm64/boot/dts
           
-          # 使用设备默认配置
-          make O=out ARCH=arm64 clover_defconfig
+          # 使用 clover_defconfig
+          echo "=== Using clover_defconfig ==="
+          cp arch/arm64/configs/clover_defconfig out/.config
           
-          # 自动化配置选项
+          # 修改配置
+          echo "=== Modifying Configuration ==="
           ./scripts/config --file out/.config \
             -d LTO_NONE \
             -e LTO_CLANG \
@@ -89,7 +91,7 @@ jobs:
             -d SLUB_DEBUG_ON \
             -d STACKTRACE
           
-          # 确保配置更新
+          # 更新配置
           make O=out ARCH=arm64 olddefconfig
           
           echo "=== Verify Configuration ==="
