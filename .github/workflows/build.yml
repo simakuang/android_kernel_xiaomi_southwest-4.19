@@ -1,4 +1,4 @@
-name: Build Kernel with KSU and SUSFS
+name: Build Optimized Mobile Kernel
 on:
   push:
     branches: [ main ]
@@ -14,7 +14,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
           fetch-depth: 0
 
       - name: Cache ccache
@@ -32,94 +31,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            git make bc bison openssl libssl-dev flex zip curl \
-            ccache automake lzop
+            clang-16 lld-16 llvm-16 \
+            git make bc bison openssl \
+            libssl-dev flex zip curl \
+            ccache automake lzop python3 \
+            binutils-aarch64-linux-gnu
 
-      - name: Setup KernelSU
+      - name: Setup LLVM Toolchain
         run: |
-          echo "=== Setting up KernelSU-Next ==="
-          # 确保子模块更新到最新版本
-          git submodule update --init --recursive
-          
-          # 创建必要的目录并链接
-          mkdir -p drivers/kernelsu
-          ln -sf KernelSU/kernel drivers/kernelsu
-          
-          # 确保 KernelSU 的 Kconfig 被包含
-          if ! grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig; then
-            echo "source \"drivers/kernelsu/Kconfig\"" >> drivers/Kconfig
-          fi
-          
-          # 修改 drivers/Makefile 以包含 KernelSU
-          if ! grep -q "obj-y += kernelsu/" drivers/Makefile; then
-            echo "obj-y += kernelsu/" >> drivers/Makefile
-          fi
-          
-          echo "=== Verify KernelSU-Next Setup ==="
-          echo "Checking Kconfig integration:"
-          grep -r "kernelsu" drivers/Kconfig
-          echo "Checking Makefile integration:"
-          grep -r "kernelsu" drivers/Makefile
-          
-          echo "=== KernelSU-Next Files ==="
-          ls -la drivers/kernelsu/
-          
-          echo "=== KernelSU-Next Version ==="
-          cd KernelSU
-          git describe --tags || echo "No tags found"
-          git rev-parse HEAD
-          cd ..
+          echo "=== Setting up LLVM Toolchain ==="
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-16 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-16 100
+          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-16 100
+          sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-16 100
+          sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-16 100
+          sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-16 100
+          sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-16 100
 
-      - name: Setup SUSFS
-        run: |
-          echo "=== Setting up SUSFS ==="
-          export KERNEL_ROOT=$GITHUB_WORKSPACE
-          
-          # 验证 SUSFS 分支
-          echo "=== Verify SUSFS Branch ==="
-          cd SUSFS
-          git branch
-          git describe --tags || echo "No tags found"
-          cd $KERNEL_ROOT
-          
-          # 复制补丁和文件
-          echo "=== Copying SUSFS Files ==="
-          cp SUSFS/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-          cp SUSFS/kernel_patches/50_add_susfs_in_kernel-4.19.patch ./
-          
-          # 复制源文件和头文件
-          cp -r SUSFS/kernel_patches/fs/* fs/
-          cp -r SUSFS/kernel_patches/include/linux/* include/linux/
-          
-          # 应用补丁
-          echo "=== Applying KernelSU Patch ==="
-          cd KernelSU
-          if ! patch -p1 --dry-run < 10_enable_susfs_for_ksu.patch; then
-            echo "WARNING: KernelSU patch may fail, proceeding anyway..."
-          fi
-          patch -p1 < 10_enable_susfs_for_ksu.patch || {
-            echo "KernelSU patch failed, checking status..."
-            git status
-            git diff
-          }
-          
-          cd $KERNEL_ROOT
-          echo "=== Applying SUSFS Patch ==="
-          if ! patch -p1 --dry-run < 50_add_susfs_in_kernel-4.19.patch; then
-            echo "WARNING: SUSFS patch may fail, proceeding anyway..."
-          fi
-          patch -p1 < 50_add_susfs_in_kernel-4.19.patch || {
-            echo "SUSFS patch failed, checking status..."
-            git status
-            git diff
-          }
-          
-          # 验证文件结构
-          echo "=== Verifying File Structure ==="
-          echo "Checking fs directory:"
-          ls -R fs/
-          echo "Checking SUSFS headers:"
-          ls -R include/linux/susfs* || true
+          echo "=== Checking Toolchain Versions ==="
+          clang --version
+          ld.lld --version
+          llvm-ar --version
 
       - name: Setup Kernel Configuration
         run: |
@@ -127,6 +59,15 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export LD=ld.lld
           
           mkdir -p out
           mkdir -p arch/arm64/boot/dts
@@ -134,61 +75,44 @@ jobs:
           # 使用设备默认配置
           make O=out ARCH=arm64 clover_defconfig
           
-          # 启用必要的配置
+          # 优化配置
           ./scripts/config --file out/.config \
-            -e MODULES \
+            -e LTO \
+            -e LTO_CLANG \
+            -e LLVM \
+            -e LLVM_POLLY \
+            -e CFI \
+            -e CFI_PERMISSIVE \
+            -e CFI_CLANG \
+            -e THINLTO \
+            -e ARM64_CRYPTO \
+            -e CRYPTO_AES_ARM64_CE_CCM \
+            -e CRYPTO_AES_ARM64_CE_BLK \
+            -e CRYPTO_SHA1_ARM64_CE \
+            -e CRYPTO_SHA2_ARM64_CE \
+            -e CRYPTO_SHA512_ARM64_CE \
+            -e CRYPTO_SHA3_ARM64 \
+            -e CRYPTO_GHASH_ARM64_CE \
             -e KPROBES \
+            -e OPTPROBES \
+            -e KPROBES_ON_FTRACE \
             -e HAVE_KPROBES \
-            -e KPROBE_EVENTS \
-            -e OVERLAY_FS \
-            -e ADVISE_SYSCALLS \
-            -e KALLSYMS \
-            -e KALLSYMS_ALL \
-            -e KSU \
-            -e KSU_SUSFS \
-            -e SUSFS \
-            -d KSU_SUSFS_SUS_SU \
-            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
-            --set-str LOCALVERSION "-KernelSU-SUSFS"
+            -e HAVE_KPROBES_ON_FTRACE \
+            -e HAVE_OPTPROBES \
+            -e PREEMPT \
+            -d DEBUG_INFO \
+            -d DEBUG_INFO_DWARF4 \
+            -d DEBUG_INFO_DWARF5 \
+            -d SLUB_DEBUG \
+            -d SLUB_DEBUG_ON \
+            -d STACKTRACE \
+            -d DYNAMIC_DEBUG
           
-          # 确保配置更新
+          # 更新配置
           make O=out ARCH=arm64 olddefconfig
           
-          # 验证配置
-          echo "=== Verifying Configuration ==="
-          configs_to_check=(
-            "MODULES"
-            "KPROBES"
-            "HAVE_KPROBES"
-            "KPROBE_EVENTS"
-            "OVERLAY_FS"
-            "ADVISE_SYSCALLS"
-            "KALLSYMS"
-            "KALLSYMS_ALL"
-            "KSU"
-            "KSU_SUSFS"
-            "SUSFS"
-            "KSU_SUSFS_HAS_MAGIC_MOUNT"
-          )
-          
-          for config in "${configs_to_check[@]}"; do
-            if grep -q "^CONFIG_$config=y" out/.config; then
-              echo "CONFIG_$config is enabled ✓"
-            else
-              echo "ERROR: CONFIG_$config is not enabled ✗"
-              echo "Current value:"
-              grep "CONFIG_$config" out/.config || echo "CONFIG_$config not found"
-              
-              # 显示相关的配置文件
-              echo "Looking for $config in Kconfig files:"
-              find . -type f -name "Kconfig*" -exec grep -l "$config" {} \;
-              exit 1
-            fi
-          done
-          
-          # 显示完整的 KSU 相关配置
-          echo "=== KernelSU Related Configurations ==="
-          grep -E "CONFIG_(KSU|KPROBES|OVERLAY_FS|ADVISE_SYSCALLS).*=" out/.config || true
+          echo "=== Kernel Configuration Summary ==="
+          grep -E "CONFIG_(LTO|LLVM|CFI|CRYPTO|PREEMPT|DEBUG).*=" out/.config
 
       - name: Build Kernel
         run: |
@@ -197,23 +121,41 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export LD=ld.lld
+          export LLVM=1
+          export LLVM_IAS=1
           export CCACHE_DIR=~/.ccache
           
-          echo "=== Ccache Stats Before Build ==="
-          ccache -s
+          # 优化参数
+          KBUILD_CFLAGS="-O3 -mtune=native -march=native"
+          KBUILD_CFLAGS+=" -fdata-sections -ffunction-sections"
+          KBUILD_CFLAGS+=" -fno-common -fno-strict-aliasing"
+          KBUILD_CFLAGS+=" -pipe -ffast-math"
+          KBUILD_CFLAGS+=" -flto=thin"
+          export KBUILD_CFLAGS
           
-          echo "=== Starting Kernel Build ==="
-          # 首先尝试创建必要的目录
-          mkdir -p out/arch/arm64/boot/dts
-          
+          echo "=== Starting Optimized Kernel Build ==="
           make O=out \
             ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            LD=ld.lld \
+            STRIP=llvm-strip \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            KBUILD_CFLAGS="$KBUILD_CFLAGS" \
             -j$(nproc --all) 2>&1 | tee build.log
-          
-          echo "=== Ccache Stats After Build ==="
-          ccache -s
           
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
             echo "✅ Kernel compiled successfully!"
@@ -222,22 +164,29 @@ jobs:
             echo "❌ Kernel compilation failed!"
             echo "=== Build Log Tail ==="
             tail -n 100 build.log
-            echo "=== Directory Structure ==="
-            ls -R out/arch/arm64/boot/
             exit 1
           fi
+
+      - name: Post Build Analysis
+        if: success()
+        run: |
+          echo "=== Kernel Size Analysis ==="
+          ls -lh out/arch/arm64/boot/Image*
+          
+          echo "=== Checking LTO Status ==="
+          nm out/vmlinux | grep -c "LLVM" || true
+          
+          echo "=== Security Features ==="
+          readelf -S out/vmlinux | grep -i "gnu"
 
       - name: Create Release Package
         if: success()
         run: |
           echo "=== Creating Release Package ==="
-          mkdir -p AnyKernel3
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cd AnyKernel3
+          mkdir -p release
+          cp out/arch/arm64/boot/Image.gz-dtb release/
+          cd release
           zip -r9 ../kernel-release.zip *
-          cd ..
-          echo "=== Release Package Contents ==="
-          unzip -l kernel-release.zip
 
       - name: Upload Build Artifacts
         if: always()
@@ -248,23 +197,7 @@ jobs:
             kernel-release.zip
             build.log
             out/.config
-            out/config_status.log
           retention-days: 7
-
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            kernel-release.zip
-            build.log
-          name: KernelSU-SUSFS Release ${{ github.ref_name }}
-          body: |
-            KernelSU-Next with SUSFS Integration
-            Build Date: ${{ github.event.head_commit.timestamp }}
-            Commit: ${{ github.sha }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup
         if: always()
@@ -272,5 +205,6 @@ jobs:
           echo "=== Cleaning up ==="
           make O=out clean
           make O=out mrproper
+          ccache -s
           echo "=== Final Disk Space ==="
           df -h
