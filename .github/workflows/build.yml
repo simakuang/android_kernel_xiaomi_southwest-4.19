@@ -35,6 +35,28 @@ jobs:
             git make bc bison openssl libssl-dev flex zip curl \
             ccache automake lzop
 
+      - name: Verify Prerequisites
+        run: |
+          echo "=== Verifying Prerequisites ==="
+          # 检查必要的目录
+          for dir in "arch/arm64/boot/dts" "drivers/kernelsu" "fs"; do
+            if [ ! -d "$dir" ]; then
+              echo "Creating directory: $dir"
+              mkdir -p "$dir"
+            fi
+          done
+          
+          # 检查必要的文件
+          if [ ! -f "arch/arm64/configs/clover_defconfig" ]; then
+            echo "ERROR: Missing kernel defconfig"
+            exit 1
+          fi
+          
+          # 验证工具链
+          echo "=== Toolchain Version ==="
+          aarch64-linux-gnu-gcc --version
+          arm-linux-gnueabi-gcc --version
+
       - name: Setup KernelSU
         run: |
           echo "=== Setting up KernelSU ==="
@@ -112,6 +134,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           
           mkdir -p out
+          mkdir -p arch/arm64/boot/dts
           
           # 清理之前的配置
           make O=out clean
@@ -145,8 +168,10 @@ jobs:
             -e CONFIG_KPROBE_EVENTS \
             -e CONFIG_MODULES \
             -e CONFIG_OVERLAY_FS \
+            -e CONFIG_ADVISE_SYSCALLS \
             -e CONFIG_KSU \
             -e CONFIG_KSU_SUSFS \
+            -e CONFIG_SUSFS \
             -d CONFIG_KSU_SUSFS_SUS_SU \
             -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
             --set-str CONFIG_LOCALVERSION "-KernelSU-SUSFS"
@@ -157,14 +182,26 @@ jobs:
           # 验证配置
           echo "=== Verifying Kernel Configuration ==="
           # 检查必要的配置项
-          for config in CONFIG_KPROBES CONFIG_HAVE_KPROBES CONFIG_KPROBE_EVENTS \
-                       CONFIG_MODULES CONFIG_KSU CONFIG_KSU_SUSFS \
-                       CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-          do
-            if grep -q "^$config=y" out/.config; then
-              echo "$config is enabled ✓"
+          configs_to_check=(
+            "CONFIG_KPROBES"
+            "CONFIG_HAVE_KPROBES"
+            "CONFIG_KPROBE_EVENTS"
+            "CONFIG_MODULES"
+            "CONFIG_OVERLAY_FS"
+            "CONFIG_ADVISE_SYSCALLS"
+            "CONFIG_KSU"
+            "CONFIG_KSU_SUSFS"
+            "CONFIG_SUSFS"
+            "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT"
+          )
+          
+          for config in "${configs_to_check[@]}"; do
+            if grep -q "^${config}=y" out/.config; then
+              echo "${config} is enabled ✓"
             else
-              echo "ERROR: $config is not enabled ✗"
+              echo "ERROR: ${config} is not enabled ✗"
+              echo "Current value:"
+              grep "${config}" out/.config || echo "${config} not found"
               exit 1
             fi
           done
@@ -178,7 +215,13 @@ jobs:
           fi
           
           echo "=== Current Configuration ==="
-          grep -E "CONFIG_(CC_|LLVM|CLANG|POLLY|KSU|SUSFS)" out/.config || true
+          echo "Checking all relevant configs:"
+          grep -E "CONFIG_(CC_|LLVM|CLANG|POLLY|KSU|SUSFS|KPROBE|OVERLAY_FS|ADVISE_SYSCALLS)" out/.config || true
+          
+          echo "=== Kernel Configuration Summary ==="
+          echo "Directory structure:"
+          ls -la arch/arm64/boot/
+          ls -la out/arch/arm64/boot/ || true
 
       - name: Build Kernel
         run: |
@@ -193,6 +236,9 @@ jobs:
           ccache -s
           
           echo "=== Starting Kernel Build ==="
+          # 首先尝试创建必要的目录
+          mkdir -p out/arch/arm64/boot/dts
+          
           make \
             O=out \
             ARCH=arm64 \
@@ -200,7 +246,13 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             KCFLAGS="" \
             KAFLAGS="" \
-            -j$(nproc --all) 2>&1 | tee build.log
+            -j$(nproc --all) 2>&1 | tee build.log || {
+              echo "Build failed! Checking error log..."
+              tail -n 200 build.log
+              echo "=== Directory Structure ==="
+              ls -R out/arch/arm64/boot/
+              exit 1
+            }
           
           echo "=== Ccache Stats After Build ==="
           ccache -s
@@ -212,6 +264,8 @@ jobs:
             echo "❌ Kernel compilation failed!"
             echo "=== Build Log Tail ==="
             tail -n 100 build.log
+            echo "=== Directory Structure ==="
+            ls -R out/arch/arm64/boot/
             exit 1
           fi
 
