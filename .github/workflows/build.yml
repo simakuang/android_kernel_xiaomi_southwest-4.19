@@ -34,7 +34,7 @@ jobs:
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             git make bc bison openssl libssl-dev flex zip curl \
             ccache automake lzop
-            
+
       - name: Setup KernelSU
         run: |
           echo "=== Setting up KernelSU ==="
@@ -50,7 +50,7 @@ jobs:
           ls -la drivers/kernelsu
           echo "=== KernelSU Version ==="
           cd KernelSU
-          git describe --tags
+          git describe --tags || echo "No tags found"
           cd ..
 
       - name: Setup SUSFS
@@ -258,75 +258,8 @@ jobs:
           name: KernelSU-SUSFS Release ${{ github.ref_name }}
           body: |
             KernelSU-Next with SUSFS Integration
-            
-            Build Information:
-            - Build Date: ${{ github.event.head_commit.timestamp }}
-            - Commit: ${{ github.sha }}
-            - KernelSU Version: $(cd KernelSU && git describe --tags)
-            - SUSFS Version: $(cd SUSFS && git describe --tags || echo "No tag")
-            
-            Please refer to the build log for detailed information.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cleanup
-        if: always()
-        run: |
-          echo "=== Cleaning up ==="
-          make O=out clean
-          make O=out mrproper
-          echo "=== Final Disk Space ==="
-          df -h      - name: Create Release Package
-        if: success()
-        run: |
-          echo "=== Creating Release Package ==="
-          mkdir -p AnyKernel3
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cd AnyKernel3
-          zip -r9 ../kernel-release.zip *
-          cd ..
-          echo "=== Release Package Contents ==="
-          unzip -l kernel-release.zip
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-release
-          path: |
-            kernel-release.zip
-            build.log
-          retention-days: 30
-
-      - name: Upload Build Logs on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            out/.config
-            build.log
-            *.rej
-            *.orig
-          retention-days: 7
-
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            kernel-release.zip
-            build.log
-          name: KernelSU-SUSFS Release ${{ github.ref_name }}
-          body: |
-            KernelSU-Next with SUSFS Integration
-            
-            Build Information:
-            - Build Date: ${{ github.event.head_commit.timestamp }}
-            - Commit: ${{ github.sha }}
-            - KernelSU Version: $(cd KernelSU && git describe --tags)
-            - SUSFS Version: $(cd SUSFS && git describe --tags || echo "No tag")
-            
-            Please refer to the build log for detailed information.
+            Build Date: ${{ github.event.head_commit.timestamp }}
+            Commit: ${{ github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
